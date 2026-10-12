@@ -154,13 +154,14 @@ function renderFamilia(f){
         <datalist id="tipos">${TIPOS.map(t=>`<option value="${t}">`).join('')}</datalist></div>
       <div><label>Valor (€)</label><input name="valor" type="number" step="0.01" min="0.01" inputmode="decimal" required></div>
       <div><label>Data</label><input name="data" type="date" value="${hoje()}" required></div>
+      <div class="full"><label>Comentário (opcional)</label><input name="comentario" maxlength="300" placeholder="Ex.: jantar de sábado" autocomplete="off"></div>
       <div class="full"><button class="primary" id="btn">+ Adicionar despesa</button></div>
     </form>
   </div>
   <div class="card">
     <h2>Despesas lançadas — total ${eur(tot)}</h2>
     ${meus.length?`<div class="wrap"><table><tr><th>Data</th><th>Tipo</th><th class="n">Valor</th><th></th></tr>
-      ${meus.map(r=>`<tr><td>${fmtData(r.data)}</td><td>${esc(r.tipo)}</td><td class="n">${eur(cents(r))}</td>
+      ${meus.map(r=>`<tr><td>${fmtData(r.data)}</td><td>${esc(r.tipo)}${r.comentario?`<div class="msg">${esc(r.comentario)}</div>`:''}</td><td class="n">${eur(cents(r))}</td>
       <td class="n"><button class="x" data-id="${r.id}" title="Apagar">✕</button></td></tr>`).join('')}</table></div>`
       :'<div class="msg">Ainda sem despesas.</div>'}
   </div>`
@@ -206,7 +207,7 @@ function render(){
     btn.disabled = true
     try{
       await api(TABLE,{method:'POST',headers:{...HDR,Prefer:'return=minimal'},
-        body:JSON.stringify({familia:f.id,tipo:fd.get('tipo').trim(),valor:Number(fd.get('valor')),data:fd.get('data')})})
+        body:JSON.stringify({familia:f.id,tipo:fd.get('tipo').trim(),valor:Number(fd.get('valor')),data:fd.get('data'),comentario:fd.get('comentario').trim()||null})})
       await load()
     }catch(err){ document.getElementById('err').textContent='Erro ao gravar: '+err.message; btn.disabled=false }
   }
