@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Despesas do Fim de Semana</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--tx:#1d2433;--mut:#6b7488;--bd:#e3e6ef;--pri:#2563eb;--ok:#16a34a;--bad:#dc2626}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--tx)}
+header{padding:16px 16px 8px}
+h1{margin:0;font-size:20px}
+.sub{color:var(--mut);font-size:13px;margin-top:2px}
+nav{display:flex;gap:6px;overflow-x:auto;padding:8px 16px;position:sticky;top:0;background:var(--bg);z-index:5}
+nav button{flex:none;border:1px solid var(--bd);background:var(--card);padding:8px 12px;border-radius:999px;font-size:14px;cursor:pointer;color:var(--tx)}
+nav button.on{background:var(--pri);border-color:var(--pri);color:#fff}
+main{padding:8px 16px 40px;max-width:760px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:14px}
+.card h2{margin:0 0 10px;font-size:16px}
+form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+form .full{grid-column:1/-1}
+label{font-size:12px;color:var(--mut);display:block;margin-bottom:3px}
+input,select{width:100%;padding:10px;border:1px solid var(--bd);border-radius:8px;font-size:15px;background:#fff;color:var(--tx)}
+button.primary{background:var(--pri);color:#fff;border:0;padding:11px;border-radius:8px;font-size:15px;cursor:pointer}
+button.primary:disabled{opacity:.6}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:8px 6px;border-bottom:1px solid var(--bd);text-align:left}
+th{font-size:12px;color:var(--mut);font-weight:600}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.pos{color:var(--ok);font-weight:600}.neg{color:var(--bad);font-weight:600}
+.x{border:0;background:none;color:var(--bad);cursor:pointer;font-size:16px}
+.tot{font-weight:700}
+.pay{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--bd)}
+.pay:last-child{border:0}
+.pay .amt{margin-left:auto;font-weight:700}
+.msg{color:var(--mut);font-size:13px}
+.err{color:var(--bad);font-size:13px;padding:0 16px}
+.wrap{overflow-x:auto}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏖️ Despesas do Fim de Semana</h1>
+  <div class="sub">Cada família regista as suas despesas · o Resumo divide por pessoa e minimiza as transferências</div>
+</header>
+<nav id="nav"></nav>
+<div class="err" id="err"></div>
+<main id="main"></main>
+
+<script>
+const SUPA_URL = 'https://xqkrafruaikukgkjrswv.supabase.co'
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhxa3JhZnJ1YWlrdWtna2pyc3d2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4ODA2MzYsImV4cCI6MjA5NTQ1NjYzNn0.ZL_cm50675xsh2DpAsAk4HD3Ws0UUvgHVFNq5qTRV5c'
+const TABLE = 'despesas_fds'
+const FAMS = [
+  {id:'Soares', nome:'Família Soares', p:3},
+  {id:'Rez', nome:'Família Rez', p:3},
+  {id:'Monteiro Jr.', nome:'Família Monteiro Jr.', p:3},
+  {id:'Ramos', nome:'Família Ramos', p:2},
+  {id:'Tó Senior', nome:'Família Tó Senior', p:1},
+]
+const TOTAL_P = FAMS.reduce((s,f)=>s+f.p,0)
+const TIPOS = ['Alojamento','Alimentação','Supermercado','Restaurante','Combustível','Portagens','Atividades','Bebidas','Outros']
+const HDR = {apikey:SUPA_KEY, Authorization:'Bearer '+SUPA_KEY, 'Content-Type':'application/json'}
+
+let rows = [], tab = localStorage.getItem('fds_tab') || FAMS[0].id
+
+const eur = c => (c/100).toLocaleString('pt-PT',{style:'currency',currency:'EUR'})
+const esc = s => String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))
+const hoje = () => new Date().toISOString().slice(0,10)
+const fmtData = d => d.split('-').reverse().join('/')
+const cents = r => Math.round(Number(r.valor)*100)
+
+async function api(path, opts={}){
+  const r = await fetch(SUPA_URL+'/rest/v1/'+path, {headers:HDR, ...opts})
+  if(!r.ok) throw new Error(await r.text())
+  return r.status===204 ? null : r.json()
+}
+async function load(){
+  try{
+    rows = await api(`${TABLE}?select=*&order=data.desc,created_at.desc`)
+    document.getElementById('err').textContent = ''
+  }catch(e){
+    document.getElementById('err').textContent = 'Erro ao ligar à base de dados: '+e.message
+  }
+  render()
+}
+
+/* ── Liquidação com mínimo de transferências ─────────────────
+   Saldos em cêntimos (>0 recebe, <0 paga). Procura a partição máxima
+   em grupos de soma zero; cada grupo de k pessoas precisa de k-1 transferências. */
+function settle(bal){
+  const ppl = bal.filter(b=>b.c!==0), n = ppl.length
+  if(!n) return []
+  const full = (1<<n)-1, sum = new Array(1<<n).fill(0)
+  for(let m=1;m<=full;m++){const l=m&-m;sum[m]=sum[m^l]+ppl[31-Math.clz32(l)].c}
+  const best = new Array(1<<n).fill(0), pick = new Array(1<<n).fill(0)
+  for(let m=1;m<=full;m++){
+    const low = m&-m
+    for(let s=m;s;s=(s-1)&m){
+      if((s&low) && sum[s]===0){
+        const v = best[m^s]+1
+        if(v>best[m]){best[m]=v;pick[m]=s}
+      }
+    }
+  }
+  const out=[]; let m=full
+  while(m){
+    const s = pick[m]||m
+    const g = ppl.filter((_,i)=>s>>i&1).map(x=>({...x}))
+    const dev = g.filter(x=>x.c<0), cre = g.filter(x=>x.c>0)
+    dev.sort((a,b)=>a.c-b.c); cre.sort((a,b)=>b.c-a.c)
+    let i=0,j=0
+    while(i<dev.length && j<cre.length){
+      const v = Math.min(-dev[i].c, cre[j].c)
+      out.push({de:dev[i].id, para:cre[j].id, c:v})
+      dev[i].c+=v; cre[j].c-=v
+      if(dev[i].c===0)i++
+      if(cre[j].c===0)j++
+    }
+    m ^= s
+  }
+  return out
+}
+
+function calc(){
+  const pago = Object.fromEntries(FAMS.map(f=>[f.id,0]))
+  rows.forEach(r=>{ if(pago[r.familia]!==undefined) pago[r.familia]+=cents(r) })
+  const total = Object.values(pago).reduce((a,b)=>a+b,0)
+  // partes por pessoa, em cêntimos, com resto distribuído para somar exatamente o total
+  const parte = {}; let acc=0
+  FAMS.forEach(f=>{parte[f.id]=Math.floor(total*f.p/TOTAL_P); acc+=parte[f.id]})
+  let resto = total-acc
+  FAMS.slice().sort((a,b)=>b.p-a.p).forEach(f=>{ if(resto>0){parte[f.id]++;resto--} })
+  const bal = FAMS.map(f=>({id:f.id, c:pago[f.id]-parte[f.id]}))
+  return {pago,total,parte,bal,pags:settle(bal)}
+}
+
+function renderNav(){
+  const items = [...FAMS.map(f=>[f.id,f.nome.replace('Família ','')]), ['__resumo','📊 Resumo']]
+  document.getElementById('nav').innerHTML = items.map(([id,l])=>
+    `<button class="${tab===id?'on':''}" data-t="${esc(id)}">${esc(l)}</button>`).join('')
+  document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;localStorage.setItem('fds_tab',tab);render()})
+}
+
+function renderFamilia(f){
+  const meus = rows.filter(r=>r.familia===f.id)
+  const tot = meus.reduce((s,r)=>s+cents(r),0)
+  return `
+  <div class="card">
+    <h2>${esc(f.nome)} · ${f.p} pessoa${f.p>1?'s':''}</h2>
+    <form id="frm">
+      <div class="full"><label>Tipo de despesa</label>
+        <input name="tipo" list="tipos" required placeholder="Ex.: Supermercado" autocomplete="off">
+        <datalist id="tipos">${TIPOS.map(t=>`<option value="${t}">`).join('')}</datalist></div>
+      <div><label>Valor (€)</label><input name="valor" type="number" step="0.01" min="0.01" inputmode="decimal" required></div>
+      <div><label>Data</label><input name="data" type="date" value="${hoje()}" required></div>
+      <div class="full"><button class="primary" id="btn">+ Adicionar despesa</button></div>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Despesas lançadas — total ${eur(tot)}</h2>
+    ${meus.length?`<div class="wrap"><table><tr><th>Data</th><th>Tipo</th><th class="n">Valor</th><th></th></tr>
+      ${meus.map(r=>`<tr><td>${fmtData(r.data)}</td><td>${esc(r.tipo)}</td><td class="n">${eur(cents(r))}</td>
+      <td class="n"><button class="x" data-id="${r.id}" title="Apagar">✕</button></td></tr>`).join('')}</table></div>`
+      :'<div class="msg">Ainda sem despesas.</div>'}
+  </div>`
+}
+
+function renderResumo(){
+  const {pago,total,parte,bal,pags} = calc()
+  const nome = id => FAMS.find(f=>f.id===id).nome
+  const porTipo = {}
+  rows.forEach(r=>{porTipo[r.tipo]=(porTipo[r.tipo]||0)+cents(r)})
+  return `
+  <div class="card">
+    <h2>Resumo por família</h2>
+    <div class="wrap"><table>
+      <tr><th>Família</th><th class="n">Pessoas</th><th class="n">Pagou</th><th class="n">Deve ficar</th><th class="n">Saldo</th></tr>
+      ${FAMS.map((f,i)=>`<tr><td>${esc(f.nome.replace('Família ',''))}</td><td class="n">${f.p}</td>
+        <td class="n">${eur(pago[f.id])}</td><td class="n">${eur(parte[f.id])}</td>
+        <td class="n ${bal[i].c>=0?'pos':'neg'}">${bal[i].c>0?'+':''}${eur(bal[i].c)}</td></tr>`).join('')}
+      <tr class="tot"><td>Total</td><td class="n">${TOTAL_P}</td><td class="n">${eur(total)}</td><td class="n">${eur(total)}</td><td></td></tr>
+    </table></div>
+    <div class="msg" style="margin-top:8px">Custo por pessoa: ${eur(Math.round(total/TOTAL_P))} · saldo positivo = tem a receber; negativo = tem a pagar.</div>
+  </div>
+  <div class="card">
+    <h2>Quitação de contas (${pags.length} transferência${pags.length===1?'':'s'})</h2>
+    ${pags.length?pags.map(p=>`<div class="pay"><span>${esc(nome(p.de).replace('Família ',''))} → ${esc(nome(p.para).replace('Família ',''))}</span><span class="amt">${eur(p.c)}</span></div>`).join('')
+      :'<div class="msg">Tudo equilibrado — sem transferências.</div>'}
+  </div>
+  <div class="card">
+    <h2>Despesas por tipo</h2>
+    ${Object.keys(porTipo).length?`<table>${Object.entries(porTipo).sort((a,b)=>b[1]-a[1]).map(([t,v])=>`<tr><td>${esc(t)}</td><td class="n">${eur(v)}</td></tr>`).join('')}</table>`:'<div class="msg">Sem dados.</div>'}
+  </div>`
+}
+
+function render(){
+  renderNav()
+  const main = document.getElementById('main')
+  if(tab==='__resumo'){ main.innerHTML = renderResumo(); return }
+  const f = FAMS.find(x=>x.id===tab) || FAMS[0]
+  main.innerHTML = renderFamilia(f)
+  document.getElementById('frm').onsubmit = async e=>{
+    e.preventDefault()
+    const fd = new FormData(e.target), btn = document.getElementById('btn')
+    btn.disabled = true
+    try{
+      await api(TABLE,{method:'POST',headers:{...HDR,Prefer:'return=minimal'},
+        body:JSON.stringify({familia:f.id,tipo:fd.get('tipo').trim(),valor:Number(fd.get('valor')),data:fd.get('data')})})
+      await load()
+    }catch(err){ document.getElementById('err').textContent='Erro ao gravar: '+err.message; btn.disabled=false }
+  }
+  main.querySelectorAll('.x').forEach(b=>b.onclick=async()=>{
+    if(!confirm('Apagar esta despesa?')) return
+    try{ await api(`${TABLE}?id=eq.${b.dataset.id}`,{method:'DELETE'}); await load() }
+    catch(err){ document.getElementById('err').textContent='Erro ao apagar: '+err.message }
+  })
+}
+
+load()
+setInterval(()=>{ if(!document.activeElement || !['INPUT','SELECT'].includes(document.activeElement.tagName)) load() }, 20000)
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) load() })
+</script>
+</body>
+</html>
